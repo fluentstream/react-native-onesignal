@@ -3,15 +3,15 @@ package com.geektime.rnonesignalandroid;
 import java.util.Iterator;
 
 import android.app.Activity;
+import android.app.NotificationManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.os.Bundle;
+import android.support.v4.app.NotificationManagerCompat;
+import android.support.v4.app.RemoteInput;
 import android.util.Log;
-import android.content.pm.ApplicationInfo;
-import android.content.pm.PackageInfo;
-import android.content.pm.PackageManager;
 
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.Callback;
@@ -23,7 +23,7 @@ import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
-import com.facebook.react.bridge.Promise;
+import com.onesignal.NotificationExtenderService;
 import com.onesignal.OSPermissionState;
 import com.onesignal.OSPermissionSubscriptionState;
 import com.onesignal.OSSubscriptionState;
@@ -33,9 +33,7 @@ import com.onesignal.OneSignal.EmailUpdateHandler;
 import com.onesignal.OneSignal.EmailUpdateError;
 
 import org.json.JSONObject;
-import org.json.JSONArray;
 import org.json.JSONException;
-
 
 /**
 * Created by Avishay on 1/31/16.

@@ -43,6 +43,7 @@ import org.json.JSONException;
 public class RNOneSignal extends ReactContextBaseJavaModule implements LifecycleEventListener {
    public static final String NOTIFICATION_OPENED_INTENT_FILTER = "GTNotificationOpened";
    public static final String NOTIFICATION_RECEIVED_INTENT_FILTER = "GTNotificationReceived";
+   public static final String NOTIFICATION_DIRECT_REPLY_INTENT_FILTER = "direct_reply";
    public static final String HIDDEN_MESSAGE_KEY = "hidden";
 
    private ReactApplicationContext mReactApplicationContext;
@@ -85,6 +86,7 @@ public class RNOneSignal extends ReactContextBaseJavaModule implements Lifecycle
          registeredEvents = true;
          registerNotificationsOpenedNotification();
          registerNotificationsReceivedNotification();
+         registerNotificationsDirectReplyReceived();
       }
 
       OneSignal.sdkType = "react";
@@ -409,6 +411,25 @@ public class RNOneSignal extends ReactContextBaseJavaModule implements Lifecycle
       }, intentFilter);
    }
 
+   private void registerNotificationsDirectReplyReceived() {
+      IntentFilter intentFilter = new IntentFilter(NOTIFICATION_DIRECT_REPLY_INTENT_FILTER);
+      mReactContext.registerReceiver(new BroadcastReceiver() {
+         @Override
+         public void onReceive(Context context, Intent intent) {
+
+            Bundle remoteInput = RemoteInput.getResultsFromIntent(intent);
+            String messageId = intent.getStringExtra("message_id");
+            String notificationId = intent.getStringExtra("notification_id");
+            String contactFrom = intent.getStringExtra("contact_from");
+
+            NotificationManagerCompat.from(context).cancel(notificationId.hashCode());
+
+            notifyDirectReplyReceived(remoteInput, messageId, contactFrom);
+         }
+      }, intentFilter);
+   }
+
+
    private void notifyNotificationReceived(Bundle bundle) {
       try {
          JSONObject jsonObject = new JSONObject(bundle.getString("notification"));
@@ -426,6 +447,26 @@ public class RNOneSignal extends ReactContextBaseJavaModule implements Lifecycle
          t.printStackTrace();
       }
    }
+
+   private void notifyDirectReplyReceived(Bundle bundle, String messageID, String contactFrom) {
+
+      String message = "";
+      if (bundle != null) {
+         message = bundle.getCharSequence("key_reply").toString();
+      }
+
+      try {
+
+         JSONObject jsonObject = new JSONObject();
+         jsonObject.put("message", message);
+         jsonObject.put("id", messageID);
+         jsonObject.put("contactFrom", contactFrom);
+         sendEvent("OneSignal-directReplyReceived",  RNUtils.jsonToWritableMap(jsonObject));
+      } catch(Throwable t) {
+         t.printStackTrace();
+      }
+   }
+
 
    @Override
    public String getName() {

@@ -10,12 +10,13 @@ const eventBroadcastNames = [
     'OneSignal-remoteNotificationReceived',
     'OneSignal-remoteNotificationOpened',
     'OneSignal-idsAvailable',
-    'OneSignal-emailSubscription'
+    'OneSignal-emailSubscription',
+    'OneSignal-directReplyReceived'
 ];
 
 var oneSignalEventEmitter;
 
-var _eventNames = [ "received", "opened", "ids", "emailSubscription"];
+var _eventNames = [ "received", "opened", "ids", "emailSubscription", "directReply"];
 
 var _notificationHandler = new Map();
 var _notificationCache = new Map();
@@ -59,7 +60,7 @@ export default class OneSignal {
         // Listen to events of notification received, opened, device registered and IDSAvailable.
 
         invariant(
-            type === 'received' || type === 'opened' || type === 'ids' || type == 'emailSubscription',
+            type === 'received' || type === 'opened' || type === 'ids' || type == 'emailSubscription' || type == 'directReply',
             'OneSignal only supports `received`, `opened`, and `ids` events'
         );
 
@@ -77,7 +78,7 @@ export default class OneSignal {
       if (!checkIfInitialized()) return;
 
         invariant(
-            type === 'received' || type === 'opened' || type === 'ids' || type == 'emailSubscription',
+            type === 'received' || type === 'opened' || type === 'ids' || type == 'emailSubscription' || type == 'directReply',
             'OneSignal only supports `received`, `opened`, and `ids` events'
         );
 

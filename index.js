@@ -40,8 +40,6 @@ const _eventNames = [
 
 var oneSignalEventEmitter;
 
-var _eventNames = [ "received", "opened", "ids", "emailSubscription", "inAppMessageClicked", "directReply"];
-
 var _eventTypeHandler = new Map();
 var _notificationCache = new Map();
 var _listeners = [];

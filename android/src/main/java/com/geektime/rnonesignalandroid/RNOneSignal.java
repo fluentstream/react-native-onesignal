@@ -1,6 +1,8 @@
 package com.geektime.rnonesignalandroid;
 
+import android.app.Activity;
 import android.content.BroadcastReceiver;
+import java.util.Collection;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -9,7 +11,8 @@ import android.os.Bundle;
 import android.support.v4.app.NotificationManagerCompat;
 import android.support.v4.app.RemoteInput;
 import android.util.Log;
-
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.Callback;
 import com.facebook.react.bridge.LifecycleEventListener;
@@ -18,10 +21,12 @@ import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
+import com.facebook.react.bridge.ReadableArray;
 import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.modules.core.DeviceEventManagerModule;
 import com.onesignal.OSEmailSubscriptionState;
+import com.onesignal.OSInAppMessageAction;
 import com.onesignal.OSPermissionState;
 import com.onesignal.OSPermissionSubscriptionState;
 import com.onesignal.OSSubscriptionState;
@@ -29,6 +34,11 @@ import com.onesignal.OneSignal;
 import com.onesignal.OneSignal.EmailUpdateError;
 import com.onesignal.OneSignal.EmailUpdateHandler;
 
+import com.onesignal.OneSignal.InAppMessageClickHandler;
+import com.onesignal.OneSignal.NotificationOpenedHandler;
+import com.onesignal.OneSignal.NotificationReceivedHandler;
+import com.onesignal.OSNotificationOpenResult;
+import com.onesignal.OSNotification;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -36,11 +46,9 @@ import org.json.JSONObject;
 import java.util.Iterator;
 
 /**
-* Created by Avishay on 1/31/16.
-*/
-public class RNOneSignal extends ReactContextBaseJavaModule implements LifecycleEventListener {
-   public static final String NOTIFICATION_OPENED_INTENT_FILTER = "GTNotificationOpened";
-   public static final String NOTIFICATION_RECEIVED_INTENT_FILTER = "GTNotificationReceived";
+ * Created by Avishay on 1/31/16.
+ */
+public class RNOneSignal extends ReactContextBaseJavaModule implements LifecycleEventListener, NotificationReceivedHandler, NotificationOpenedHandler, InAppMessageClickHandler {
    public static final String NOTIFICATION_DIRECT_REPLY_INTENT_FILTER = "direct_reply";
    public static final String HIDDEN_MESSAGE_KEY = "hidden";
 
@@ -48,6 +56,13 @@ public class RNOneSignal extends ReactContextBaseJavaModule implements Lifecycle
    private ReactContext mReactContext;
    private boolean oneSignalInitDone;
    private boolean registeredEvents = false;
+
+   private OSNotificationOpenResult coldStartNotificationResult;
+   private OSInAppMessageAction inAppMessageActionResult;
+   private boolean hasSetNotificationOpenedHandler = false;
+   private boolean hasSetInAppClickedHandler = false;
+   private boolean hasSetRequiresPrivacyConsent = false;
+   private boolean waitingForUserPrivacyConsent = false;
 
    //ensure only one callback exists at a given time due to react-native restriction
    private Callback pendingGetTagsCallback;
@@ -82,31 +97,27 @@ public class RNOneSignal extends ReactContextBaseJavaModule implements Lifecycle
 
       if (!registeredEvents) {
          registeredEvents = true;
-         registerNotificationsOpenedNotification();
-         registerNotificationsReceivedNotification();
          registerNotificationsDirectReplyReceived();
       }
-
       OneSignal.sdkType = "react";
 
       String appId = appIdFromManifest(mReactApplicationContext);
 
-      if (appId != null && appId.length() > 0) {
+      if (appId != null && appId.length() > 0)
          init(appId);
-      }
    }
 
    private void sendEvent(String eventName, Object params) {
       mReactContext
-               .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
-               .emit(eventName, params);
+              .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+              .emit(eventName, params);
    }
 
    private JSONObject jsonFromErrorMessageString(String errorMessage) throws JSONException {
       return new JSONObject().put("error", errorMessage);
    }
 
-   @ReactMethod 
+   @ReactMethod
    public void init(String appId) {
       Context context = mReactApplicationContext.getCurrentActivity();
 
@@ -118,19 +129,18 @@ public class RNOneSignal extends ReactContextBaseJavaModule implements Lifecycle
       oneSignalInitDone = true;
 
       OneSignal.sdkType = "react";
-      
+
       if (context == null) {
          // in some cases, especially when react-native-navigation is installed,
          // the activity can be null, so we can initialize with the context instead
          context = mReactApplicationContext.getApplicationContext();
       }
 
-      OneSignal.init(context,
-              null,
-              appId,
-              new NotificationOpenedHandler(mReactContext),
-              new NotificationReceivedHandler(mReactContext)
-      );
+      OneSignal.getCurrentOrNewInitBuilder().setInAppMessageClickHandler(this);
+      OneSignal.init(context, null, appId, this, this);
+
+      if (this.hasSetRequiresPrivacyConsent)
+         this.waitingForUserPrivacyConsent = true;
    }
 
    @ReactMethod
@@ -145,54 +155,54 @@ public class RNOneSignal extends ReactContextBaseJavaModule implements Lifecycle
 
    @ReactMethod
    public void getTags(final Callback callback) {
-      if (pendingGetTagsCallback == null) 
+      if (pendingGetTagsCallback == null)
          pendingGetTagsCallback = callback;
-      
+
       OneSignal.getTags(new OneSignal.GetTagsHandler() {
          @Override
          public void tagsAvailable(JSONObject tags) {
-               if (pendingGetTagsCallback != null) 
-                  pendingGetTagsCallback.invoke(RNUtils.jsonToWritableMap(tags));
+            if (pendingGetTagsCallback != null)
+               pendingGetTagsCallback.invoke(RNUtils.jsonToWritableMap(tags));
 
-               pendingGetTagsCallback = null;
+            pendingGetTagsCallback = null;
          }
       });
    }
 
-   @ReactMethod 
+   @ReactMethod
    public void setUnauthenticatedEmail(String email, final Callback callback) {
       OneSignal.setEmail(email, null, new OneSignal.EmailUpdateHandler() {
          @Override
          public void onSuccess() {
-               callback.invoke();
+            callback.invoke();
          }
 
          @Override
          public void onFailure(EmailUpdateError error) {
-               try {
-                  callback.invoke(RNUtils.jsonToWritableMap(jsonFromErrorMessageString(error.getMessage())));
-               } catch (JSONException exception) {
-                  exception.printStackTrace();
-               }
+            try {
+               callback.invoke(RNUtils.jsonToWritableMap(jsonFromErrorMessageString(error.getMessage())));
+            } catch (JSONException exception) {
+               exception.printStackTrace();
+            }
          }
       });
    }
 
-   @ReactMethod 
+   @ReactMethod
    public void setEmail(String email, String emailAuthToken, final Callback callback) {
       OneSignal.setEmail(email, emailAuthToken, new EmailUpdateHandler() {
          @Override
          public void onSuccess() {
-               callback.invoke();
+            callback.invoke();
          }
 
          @Override
          public void onFailure(EmailUpdateError error) {
-               try {
-                  callback.invoke(RNUtils.jsonToWritableMap(jsonFromErrorMessageString(error.getMessage())));
-               } catch (JSONException exception) {
-                  exception.printStackTrace();
-               }
+            try {
+               callback.invoke(RNUtils.jsonToWritableMap(jsonFromErrorMessageString(error.getMessage())));
+            } catch (JSONException exception) {
+               exception.printStackTrace();
+            }
          }
       });
    }
@@ -202,30 +212,30 @@ public class RNOneSignal extends ReactContextBaseJavaModule implements Lifecycle
       OneSignal.logoutEmail(new EmailUpdateHandler() {
          @Override
          public void onSuccess() {
-               callback.invoke();
+            callback.invoke();
          }
 
          @Override
          public void onFailure(EmailUpdateError error) {
-               try {
-                  callback.invoke(RNUtils.jsonToWritableMap(jsonFromErrorMessageString(error.getMessage())));
-               } catch (JSONException exception) {
-                  exception.printStackTrace();
-               }
+            try {
+               callback.invoke(RNUtils.jsonToWritableMap(jsonFromErrorMessageString(error.getMessage())));
+            } catch (JSONException exception) {
+               exception.printStackTrace();
+            }
          }
       });
    }
 
    @ReactMethod
-   public void configure() {
+   public void idsAvailable() {
       OneSignal.idsAvailable(new OneSignal.IdsAvailableHandler() {
          public void idsAvailable(String userId, String registrationId) {
-               final WritableMap params = Arguments.createMap();
+            final WritableMap params = Arguments.createMap();
 
-               params.putString("userId", userId);
-               params.putString("pushToken", registrationId);
+            params.putString("userId", userId);
+            params.putString("pushToken", registrationId);
 
-               sendEvent("OneSignal-idsAvailable", params);
+            sendEvent("OneSignal-idsAvailable", params);
          }
       });
    }
@@ -253,9 +263,9 @@ public class RNOneSignal extends ReactContextBaseJavaModule implements Lifecycle
       try {
          JSONObject result = new JSONObject();
 
-         result.put("notificationsEnabled", String.valueOf(notificationsEnabled))
-                 .put("subscriptionEnabled", String.valueOf(subscriptionEnabled))
-                 .put("userSubscriptionEnabled", String.valueOf(userSubscriptionEnabled))
+         result.put("notificationsEnabled", notificationsEnabled)
+                 .put("subscriptionEnabled", subscriptionEnabled)
+                 .put("userSubscriptionEnabled", userSubscriptionEnabled)
                  .put("pushToken", subscriptionState.getPushToken())
                  .put("userId", subscriptionState.getUserId())
                  .put("emailUserId", emailSubscriptionState.getEmailUserId())
@@ -333,31 +343,31 @@ public class RNOneSignal extends ReactContextBaseJavaModule implements Lifecycle
          }
 
          if (otherParameters != null && !otherParameters.trim().isEmpty()) {
-               JSONObject parametersJson = new JSONObject(otherParameters.trim());
-               Iterator<String> keys = parametersJson.keys();
-               while (keys.hasNext()) {
-                  String key = keys.next();
-                  postNotification.put(key, parametersJson.get(key));
-               }
+            JSONObject parametersJson = new JSONObject(otherParameters.trim());
+            Iterator<String> keys = parametersJson.keys();
+            while (keys.hasNext()) {
+               String key = keys.next();
+               postNotification.put(key, parametersJson.get(key));
+            }
 
-               if (parametersJson.has(HIDDEN_MESSAGE_KEY) && parametersJson.getBoolean(HIDDEN_MESSAGE_KEY)) {
-                  postNotification.getJSONObject("data").put(HIDDEN_MESSAGE_KEY, true);
-               }
+            if (parametersJson.has(HIDDEN_MESSAGE_KEY) && parametersJson.getBoolean(HIDDEN_MESSAGE_KEY)) {
+               postNotification.getJSONObject("data").put(HIDDEN_MESSAGE_KEY, true);
+            }
          }
 
          OneSignal.postNotification(
-               postNotification,
-               new OneSignal.PostNotificationResponseHandler() {
-                  @Override
-                  public void onSuccess(JSONObject response) {
-                     Log.i("OneSignal", "postNotification Success: " + response.toString());
-                  }
+                 postNotification,
+                 new OneSignal.PostNotificationResponseHandler() {
+                    @Override
+                    public void onSuccess(JSONObject response) {
+                       Log.i("OneSignal", "postNotification Success: " + response.toString());
+                    }
 
-                  @Override
-                  public void onFailure(JSONObject response) {
-                     Log.e("OneSignal", "postNotification Failure: " + response.toString());
-                  }
-               }
+                    @Override
+                    public void onFailure(JSONObject response) {
+                       Log.e("OneSignal", "postNotification Failure: " + response.toString());
+                    }
+                 }
          );
       } catch (JSONException e) {
          e.printStackTrace();
@@ -379,7 +389,7 @@ public class RNOneSignal extends ReactContextBaseJavaModule implements Lifecycle
       OneSignal.setRequiresUserPrivacyConsent(required);
    }
 
-   @ReactMethod 
+   @ReactMethod
    public void provideUserConsent(Boolean granted) {
       OneSignal.provideUserConsent(granted);
    }
@@ -389,72 +399,99 @@ public class RNOneSignal extends ReactContextBaseJavaModule implements Lifecycle
       promise.resolve(OneSignal.userProvidedPrivacyConsent());
    }
 
-   private void registerNotificationsReceivedNotification() {
-      IntentFilter intentFilter = new IntentFilter(NOTIFICATION_RECEIVED_INTENT_FILTER);
-      mReactContext.registerReceiver(new BroadcastReceiver() {
-         @Override
-         public void onReceive(Context context, Intent intent) {
-               notifyNotificationReceived(intent.getExtras());
-         }
-      }, intentFilter);
+   @ReactMethod
+   public void setExternalUserId(String externalId) {
+      OneSignal.setExternalUserId(externalId);
    }
 
-   private void registerNotificationsOpenedNotification() {
-      IntentFilter intentFilter = new IntentFilter(NOTIFICATION_OPENED_INTENT_FILTER);
-      mReactContext.registerReceiver(new BroadcastReceiver() {
-         @Override
-         public void onReceive(Context context, Intent intent) {
-               notifyNotificationOpened(intent.getExtras());
-         }
-      }, intentFilter);
+   @ReactMethod
+   public void removeExternalUserId() {
+      OneSignal.removeExternalUserId();
    }
 
-   private void registerNotificationsDirectReplyReceived() {
-      IntentFilter intentFilter = new IntentFilter(NOTIFICATION_DIRECT_REPLY_INTENT_FILTER);
-      mReactContext.registerReceiver(new BroadcastReceiver() {
-         @Override
-         public void onReceive(Context context, Intent intent) {
-
-            Bundle remoteInput = RemoteInput.getResultsFromIntent(intent);
-            String messageId = intent.getStringExtra("message_id");
-            String notificationId = intent.getStringExtra("notification_id");
-            String contactFrom = intent.getStringExtra("contact_from");
-
-            NotificationManagerCompat.from(context).cancel(notificationId.hashCode());
-
-            notifyDirectReplyReceived(remoteInput, messageId, contactFrom);
-         }
-      }, intentFilter);
-   }
-
-
-   private void notifyNotificationReceived(Bundle bundle) {
-      try {
-         JSONObject jsonObject = new JSONObject(bundle.getString("notification"));
-         sendEvent("OneSignal-remoteNotificationReceived", RNUtils.jsonToWritableMap(jsonObject));
-      } catch(Throwable t) {
-         t.printStackTrace();
+   @ReactMethod
+   public void initNotificationOpenedHandlerParams() {
+      this.hasSetNotificationOpenedHandler = true;
+      if (this.coldStartNotificationResult != null) {
+         this.notificationOpened(this.coldStartNotificationResult);
+         this.coldStartNotificationResult = null;
       }
    }
+   
+   private void registerNotificationsDirectReplyReceived() {
+	   IntentFilter intentFilter = new IntentFilter(NOTIFICATION_DIRECT_REPLY_INTENT_FILTER);
+	   mReactContext.registerReceiver(new BroadcastReceiver() {
+		   @Override
+		   public void onReceive(Context context, Intent intent) {
+			   Bundle remoteInput = RemoteInput.getResultsFromIntent(intent);
+			   String messageId = intent.getStringExtra("message_id");
+			   String notificationId = intent.getStringExtra("notification_id");
+			   String contactFrom = intent.getStringExtra("contact_from");
+			   NotificationManagerCompat.from(context).cancel(notificationId.hashCode());
+			   notifyDirectReplyReceived(remoteInput, messageId, contactFrom);
+		   }
+	   }, intentFilter);
+   }
 
-   private void notifyNotificationOpened(Bundle bundle) {
-      try {
-         JSONObject jsonObject = new JSONObject(bundle.getString("result"));
-         sendEvent("OneSignal-remoteNotificationOpened",  RNUtils.jsonToWritableMap(jsonObject));
-      } catch(Throwable t) {
-         t.printStackTrace();
+   @Override
+   public void notificationReceived(OSNotification notification) {
+      this.sendEvent("OneSignal-remoteNotificationReceived", RNUtils.jsonToWritableMap(notification.toJSONObject()));
+   }
+
+   @Override
+   public void notificationOpened(OSNotificationOpenResult result) {
+      if (!this.hasSetNotificationOpenedHandler) {
+         this.coldStartNotificationResult = result;
+         return;
+      }
+      this.sendEvent("OneSignal-remoteNotificationOpened", RNUtils.jsonToWritableMap(result.toJSONObject()));
+   }
+
+   @ReactMethod
+   public void addTrigger(String key, Object object) {
+      OneSignal.addTrigger(key, object);
+   }
+
+   @ReactMethod
+   public void addTriggers(ReadableMap triggers) {
+      OneSignal.addTriggers(triggers.toHashMap());
+   }
+
+   @ReactMethod
+   public void removeTriggerForKey(String key) {
+      OneSignal.removeTriggerForKey(key);
+   }
+
+   @ReactMethod
+   public void removeTriggersForKeys(ReadableArray keys) {
+      OneSignal.removeTriggersForKeys(RNUtils.convertReableArrayIntoStringCollection(keys));
+   }
+
+   @ReactMethod
+   public void getTriggerValueForKey(String key, Promise promise) {
+      promise.resolve(OneSignal.getTriggerValueForKey(key));
+   }
+
+   @ReactMethod
+   public void pauseInAppMessages(Boolean pause) {
+      OneSignal.pauseInAppMessages(pause);
+   }
+
+   @ReactMethod
+   public void initInAppMessageClickHandlerParams() {
+      this.hasSetInAppClickedHandler = true;
+      if (inAppMessageActionResult != null) {
+         this.inAppMessageClicked(this.inAppMessageActionResult);
+         this.inAppMessageActionResult = null;
       }
    }
 
    private void notifyDirectReplyReceived(Bundle bundle, String messageID, String contactFrom) {
-
       String message = "";
       if (bundle != null) {
          message = bundle.getCharSequence("key_reply").toString();
       }
-
       try {
-
          JSONObject jsonObject = new JSONObject();
          jsonObject.put("message", message);
          jsonObject.put("id", messageID);
@@ -465,6 +502,14 @@ public class RNOneSignal extends ReactContextBaseJavaModule implements Lifecycle
       }
    }
 
+   @Override
+   public void inAppMessageClicked(OSInAppMessageAction result) {
+      if (!this.hasSetInAppClickedHandler) {
+         this.inAppMessageActionResult = result;
+         return;
+      }
+      this.sendEvent("OneSignal-inAppMessageClicked", RNUtils.jsonToWritableMap(result.toJSONObject()));
+   }
 
    @Override
    public String getName() {
@@ -473,8 +518,7 @@ public class RNOneSignal extends ReactContextBaseJavaModule implements Lifecycle
 
    @Override
    public void onHostDestroy() {
-      OneSignal.removeNotificationOpenedHandler();
-      OneSignal.removeNotificationReceivedHandler();
+
    }
 
    @Override

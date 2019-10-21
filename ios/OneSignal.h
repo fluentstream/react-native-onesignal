@@ -44,12 +44,7 @@
 ***/
 
 #import <Foundation/Foundation.h>
-
-#if __IPHONE_OS_VERSION_MAX_ALLOWED >= 100000
-#define XC8_AVAILABLE 1
 #import <UserNotifications/UserNotifications.h>
-#endif
-
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wstrict-prototypes"
@@ -73,6 +68,26 @@ typedef NS_ENUM(NSUInteger, OSNotificationDisplayType) {
     OSNotificationDisplayTypeNotification
 };
 
+@interface OSInAppMessageAction : NSObject
+
+// The action name attached to the IAM action
+@property (strong, nonatomic, nullable) NSString *clickName;
+
+// The URL (if any) that should be opened when the action occurs
+@property (strong, nonatomic, nullable) NSURL *clickUrl;
+
+// Whether or not the click action is first click on the IAM
+@property (nonatomic) BOOL firstClick;
+
+// Whether or not the click action dismisses the message
+@property (nonatomic) BOOL closesMessage;
+
+@end
+
+@protocol OSInAppMessageDelegate <NSObject>
+@optional
+- (void)handleMessageAction:(OSInAppMessageAction * _Nonnull)action NS_SWIFT_NAME(handleMessageAction(action:));
+@end
 
 @interface OSNotificationAction : NSObject
 
@@ -133,7 +148,7 @@ typedef NS_ENUM(NSUInteger, OSNotificationDisplayType) {
 @property(readonly)NSString* subtitle;
 @property(readonly)NSString* body;
 
-/* Web address to launch within the app via a UIWebView */
+/* Web address to launch within the app via a WKWebView */
 @property(readonly)NSString* launchURL;
 
 /* Additional key value properties set within the payload */
@@ -148,6 +163,14 @@ typedef NS_ENUM(NSUInteger, OSNotificationDisplayType) {
 /* Holds the original payload received
  Keep the raw value for users that would like to root the push */
 @property(readonly)NSDictionary *rawPayload;
+
+/* iOS 10+ : Groups notifications into threads */
+@property(readonly)NSString *threadId;
+
+/* Parses an APS push payload into a OSNotificationPayload object.
+   Useful to call from your NotificationServiceExtension when the
+      didReceiveNotificationRequest:withContentHandler: method fires. */
++ (instancetype)parseWithApns:(nonnull NSDictionary*)message;
 
 @end
 
@@ -173,11 +196,8 @@ typedef NS_ENUM(NSUInteger, OSNotificationDisplayType) {
 @property(readonly, getter=isSilentNotification)BOOL silentNotification;
 
 /* iOS 10+: Indicates whether or not the received notification has mutableContent : 1 assigned to its payload
- Used for UNNotificationServiceExtension to launch extension.
-*/
-#if XC8_AVAILABLE
+ Used for UNNotificationServiceExtension to launch extension. */
 @property(readonly, getter=hasMutableContent)BOOL mutableContent;
-#endif
 
 /* Convert object into an NSString that can be convertible into a custom Dictionary / JSON Object */
 - (NSString*)stringify;
@@ -204,15 +224,18 @@ typedef NS_ENUM(NSInteger, OSNotificationPermission) {
     OSNotificationPermissionDenied,
     
     // The application is authorized to post user notifications.
-    OSNotificationPermissionAuthorized
+    OSNotificationPermissionAuthorized,
+    
+    // the application is only authorized to post Provisional notifications (direct to history)
+    OSNotificationPermissionProvisional
 };
-
-
 
 // Permission Classes
 @interface OSPermissionState : NSObject
 
+@property (readonly, nonatomic) BOOL reachable;
 @property (readonly, nonatomic) BOOL hasPrompted;
+@property (readonly, nonatomic) BOOL providesAppNotificationSettings;
 @property (readonly, nonatomic) OSNotificationPermission status;
 - (NSDictionary*)toDictionary;
 
@@ -297,6 +320,9 @@ typedef void (^OSHandleNotificationReceivedBlock)(OSNotification* notification);
 /*Block for handling a user reaction to a notification*/
 typedef void (^OSHandleNotificationActionBlock)(OSNotificationOpenedResult * result);
 
+/*Block for handling user click on an in app message*/
+typedef void (^OSHandleInAppMessageActionClickBlock)(OSInAppMessageAction* action);
+
 /*Dictionary of keys to pass alongside the init settings*/
     
 /*Let OneSignal directly prompt for push notifications on init*/
@@ -311,11 +337,18 @@ extern NSString * const kOSSettingsKeyInAppLaunchURL;
 /*Prompt user yes/no to open URL's from push notifications*/
 extern NSString * const kOSSSettingsKeyPromptBeforeOpeningPushURL;
 
-/* iOS10 +
+/* iOS 10 +
  Set notification's in-focus display option.
  Value must be an OSNotificationDisplayType enum
 */
 extern NSString * const kOSSettingsKeyInFocusDisplayOption;
+
+
+/* iOS 12 +
+ Used to determine if the app is able to present it's
+ own customized Notification Settings view
+*/
+extern NSString * const kOSSettingsKeyProvidesAppNotificationSettings;
 
 
 
@@ -354,6 +387,12 @@ typedef NS_ENUM(NSUInteger, ONE_S_LOG_LEVEL) {
 // Only use if you set kOSSettingsKeyAutoPrompt to false
 + (void)registerForPushNotifications __deprecated_msg("Please use promptForPushNotificationsWithUserResponse instead.");
 + (void)promptForPushNotificationsWithUserResponse:(void(^)(BOOL accepted))completionHandler;
++ (void)promptForPushNotificationsWithUserResponse:(void (^)(BOOL accepted))completionHandler fallbackToSettings:(BOOL)fallback;
+
+// This method opens the iOS Settings app and navigates to the Push Notification Settings
+// page for your app specifically
++ (void)presentAppSettings;
++ (void)registerForProvisionalAuthorization:(void(^)(BOOL accepted))completionHandler;
 
 // - Logging
 + (void)setLogLevel:(ONE_S_LOG_LEVEL)logLevel visualLevel:(ONE_S_LOG_LEVEL)visualLogLevel;
@@ -391,6 +430,8 @@ typedef NS_ENUM(NSUInteger, ONE_S_LOG_LEVEL) {
 + (void)removeEmailSubscriptionObserver:(NSObject<OSEmailSubscriptionObserver>*)observer;
 
 + (void)setSubscription:(BOOL)enable;
++ (BOOL)isInAppMessagingPaused;
++ (void)pauseInAppMessages:(BOOL)pause;
 
 // - Posting Notification
 + (void)postNotification:(NSDictionary*)jsonData;
@@ -401,11 +442,13 @@ typedef NS_ENUM(NSUInteger, ONE_S_LOG_LEVEL) {
 // - Request and track user's location
 + (void)promptLocation;
 + (void)setLocationShared:(BOOL)enable;
++ (BOOL)isLocationShared;
 
 
 // Only used for wrapping SDKs, such as Unity, Cordova, Xamarin, etc.
 + (void)setMSDKType:(NSString*)type;
 
++ (void)setInAppMessageClickHandler:(OSHandleInAppMessageActionClickBlock)delegate;
 
 // iOS 10 only
 // Process from Notification Service Extension.
@@ -435,6 +478,17 @@ typedef void (^OSEmailSuccessBlock)();
 + (void)logoutEmail;
 + (void)setEmail:(NSString * _Nonnull)email;
 + (void)setEmail:(NSString * _Nonnull)email withEmailAuthHashToken:(NSString * _Nullable)hashToken;
+
+// In App Messaging Trigger methods
++ (void)addTrigger:(NSString * _Nonnull)key withValue:(id _Nonnull)value;
++ (void)addTriggers:(NSDictionary<NSString *, id> * _Nonnull)triggers;
++ (void)removeTriggerForKey:(NSString * _Nonnull)key;
++ (void)removeTriggersForKeys:(NSArray<NSString *> * _Nonnull)keys;
++ (NSDictionary<NSString *, id> * _Nonnull)getTriggers;
++ (id _Nullable)getTriggerValueForKey:(NSString * _Nonnull)key;
+
++ (void)setExternalUserId:(NSString * _Nonnull)externalId;
++ (void)removeExternalUserId;
 
 @end
 

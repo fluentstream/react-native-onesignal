@@ -15,7 +15,12 @@ import com.onesignal.NotificationExtenderService;
 import com.onesignal.OSNotificationReceivedResult;
 
 import java.math.BigInteger;
-
+import android.app.NotificationManager;
+import android.app.Service;
+import android.provider.Settings;
+import android.net.Uri;
+import android.os.PowerManager;
+import android.app.KeyguardManager;
 
 /**
  * Created by zrunyan on 5/9/18.
@@ -28,14 +33,88 @@ public class NotificationDirectReplyHandler extends NotificationExtenderService 
         // Read properties from result.
         String notificationType = "";
         String contactFrom = "";
-
+        String silentNotification = "";
+        String silentNotificationCallerDescription = "";
 
         try {
+            silentNotification = receivedResult.payload.additionalData.get("hidden").toString();
+            if (receivedResult.payload.additionalData.opt("caller") != null) {
+                silentNotificationCallerDescription = receivedResult.payload.additionalData.opt("caller").toString();
+            }
+
+            if (silentNotification.equals("true")) {
+
+                Context context;
+                context = getApplicationContext();
+
+                // do anything here you like before running the app
+
+                // create pending intent
+                Intent dialogIntent = new Intent();
+                dialogIntent.setClassName("com.fluentcloud", "com.fluentcloud.MainActivity");
+                dialogIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, dialogIntent, 0);
+
+                // accuire an wake lock
+                PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+                PowerManager.WakeLock wakeLock;
+                wakeLock = pm.newWakeLock(PowerManager.FULL_WAKE_LOCK |
+                PowerManager.ACQUIRE_CAUSES_WAKEUP |
+                PowerManager.ON_AFTER_RELEASE, "WakeLock");
+                wakeLock.acquire(30000);
+
+                // check if screen is locked
+                KeyguardManager myKM = (KeyguardManager) context.getSystemService(Context.KEYGUARD_SERVICE);
+                Boolean isScreenLocked = false;
+                if(myKM.isKeyguardLocked() || myKM.isDeviceLocked()) {
+                    isScreenLocked = true;
+                }
+
+                 NotificationManager notificationManager = (NotificationManager)getSystemService(Service.NOTIFICATION_SERVICE);
+
+                if (isScreenLocked) {
+                    // if screen is locked then always show a notification
+                    NotificationCompat.Builder lockedScreenNotification = new NotificationCompat.Builder(context, "fcm_silent_notification_channel")
+                    .setSmallIcon(android.R.drawable.stat_notify_chat)
+                    .setContentTitle("Incoming call. Open the app to answer.")
+                    .setContentText(silentNotificationCallerDescription)
+                    .setAutoCancel(true)
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setFullScreenIntent(pendingIntent, true);
+                    notificationManager.notify(358369, lockedScreenNotification.build());
+                }
+
+                if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
+                  // run the app if its on Android P or less
+                  pendingIntent.send();
+                } else {
+                    // check if we have overlay permission in Android O(or later)
+                    if (!Settings.canDrawOverlays(this)) {
+                        // if no, show it as a push notification (if screen not locked)
+                        if (!isScreenLocked) {
+                            NotificationCompat.Builder noti = new NotificationCompat.Builder(context, "fcm_silent_notification_channel")
+                            .setSmallIcon(android.R.drawable.stat_notify_chat)
+                            .setContentTitle("Incoming call. Open the app to answer.")
+                            .setContentText(silentNotificationCallerDescription)
+                            .setAutoCancel(true)
+                            .setPriority(NotificationCompat.PRIORITY_HIGH)
+                            .setFullScreenIntent(pendingIntent, true);
+
+                            notificationManager.notify(358369, noti.build());
+                        }
+                    } else {
+                        // if yes, open the app
+                       pendingIntent.send();
+                    }
+                }
+
+                // dont show the notification
+                return true;
+            }
+
             notificationType = receivedResult.payload.additionalData.get("notificationType").toString();
             contactFrom = receivedResult.payload.additionalData.get("from").toString();
-
         } catch (Throwable t) {
-
             Log.d("Custom Direct Reply", "notificationType key is nonexistent from notification passed to NotificationExtenderService: " + receivedResult.payload.toJSONObject().toString());
             return false;
         }
